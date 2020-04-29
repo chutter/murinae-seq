@@ -196,6 +196,7 @@ gtf.data[, exon_no := str_match(gtf.data$info, "exon_number (.*?);")[,2] ]
 gtf.data[, info := NULL]
 gtf.data = gtf.data[(gtf.data$end - gtf.data$start) >= 50,]
 gtf.data = gtf.data[gtf.data$feature_type != "",]
+gtf.data$feature_type = gsub("_", "-", gtf.data$feature_type)
 
 #Next loop through each gene from the selected transcript
 #And use the gtf file to obtain the exon delimitation
@@ -383,13 +384,13 @@ for (i in 1:nrow(transcript.data)){
     #Obtains relevant metadata
     exon.range = gtf.done[j,]
  
-    if (exon.ranges$feature_type == "exon"){
+    if (exon.range$feature_type == "exon"){
       names(nc.seq) = paste0("Noncoding-exon_chr", exon.range$chrom, "_trid", 
                                 exon.range$transcript_id, "_exid", 
                                 exon.range$exon_id)
     }#end if
       
-    if (exon.ranges$feature_type != "exon"){
+    if (exon.range$feature_type != "exon"){
       utr.count = utr.count + 1
       names(nc.seq) = paste0("Noncoding-utr_chr", exon.range$chrom, "_trid", 
                                exon.range$transcript_id, "_", 
@@ -411,10 +412,12 @@ for (i in 1:nrow(transcript.data)){
     set(collect.data, i =  index.val, j = match("length", header.data), value = exon.range$end-exon.range$start)
     set(collect.data, i =  index.val, j = match("strand", header.data), value = exon.range$strand)
     index.val = as.integer(index.val + 1)
+    
+    save.seqs = append(save.seqs, nc.seq)
   }#end j loop
   
   #Save final sequences 
-  final.seqs = append(final.seqs, exon.seqs)
+  final.seqs = append(final.seqs, save.seqs)
   
 }# end i loop
 
@@ -429,7 +432,8 @@ write.fasta(sequences = final.loci, names = names(final.loci),
 
 #Write the table data
 write.data = collect.data[collect.data$target_name != "0",]
-write.csv(collect.data, file = "Mus_best_noncode_metadata.csv")
+write.data = write.data[write.data$target_name %in% names(save.seqs),]
+write.csv(write.data, file = "Mus_best_noncode_metadata.csv")
 
 
 #### ENd script

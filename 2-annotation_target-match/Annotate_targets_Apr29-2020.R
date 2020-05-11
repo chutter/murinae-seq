@@ -194,7 +194,6 @@ gtf.data[, exon_id := str_match(gtf.data$info, "exon_id (.*?);")[,2] ]
 gtf.data[, exon_no := str_match(gtf.data$info, "exon_number (.*?);")[,2] ]
 
 gtf.data[, info := NULL]
-gtf.data = gtf.data[(gtf.data$end - gtf.data$start) >= 50,]
 gtf.data = gtf.data[gtf.data$feature_type != "",]
 gtf.data$feature_type = gsub("_", "-", gtf.data$feature_type)
 
@@ -202,13 +201,22 @@ gtf.data$feature_type = gsub("_", "-", gtf.data$feature_type)
 #And use the gtf file to obtain the exon delimitation
 #And separate and save the exons 
 
-header.data = c("target_name", "feature_type", "coding", "gene_id", "transcript_id", 
-                "protein_id", "exon_id", "exon_no", "chrom", "start", "end", "length", "strand")   
-collect.data = data.table(matrix(as.character(0), nrow = nrow(gtf.data), ncol = length(header.data)))
+header.data = c("target_name", "feature_type", "chrom", "strand",
+                "gene_id", "gene_start", "gene_end", "gene_length",  
+                "transcript_id", "transcript_start", "transcript_end", "transcript_length", 
+                "protein_id", "protein_start", "protein_end", "protein_length", 
+                "exon_id", "exon_no", "exon_start", "exon_end", "exon_length")   
+
+collect.data = data.table(matrix(as.numeric(0), nrow = nrow(gtf.data), ncol = length(header.data)))
 setnames(collect.data, header.data)
-collect.data[, exon_no:=as.integer(exon_no)]
-collect.data[, start:=as.integer(start)]
-collect.data[, end:=as.integer(end)]
+collect.data[, target_name:=as.character(target_name)]
+collect.data[, feature_type:=as.character(feature_type)]
+collect.data[, chrom:=as.character(chrom)]
+collect.data[, strand:=as.character(strand)]
+collect.data[, transcript_id:=as.character(transcript_id)]
+collect.data[, protein_id:=as.character(protein_id)]
+collect.data[, exon_id:=as.character(exon_id)]
+collect.data[, gene_id:=as.character(gene_id)]
 
 final.seqs = DNAStringSet()
 index.val = as.integer(1)
@@ -217,8 +225,10 @@ for (i in 1:nrow(transcript.data)){
   temp.gtf = gtf.data[gtf.data$transcript_id %in% transcript.data$Transcript_stable_ID[i], ]
   temp.gtf = temp.gtf[order(start)]
   
-  if (nrow(temp.gtf) == 0){ next }
+  #temp.gtf = gtf.data[gtf.data$gene_id %in% "ENSMUSG00000067787",]
   
+  if (nrow(temp.gtf) == 0){ next }
+   
   #Combines the exon and cds data together to more easily give ID to cds data
   gtf.cds = temp.gtf[temp.gtf$feature_type == "CDS",]
   gtf.cds[, exon_id:=NULL]
@@ -239,11 +249,54 @@ for (i in 1:nrow(transcript.data)){
                            starts.in.df.are.0based=FALSE)
   
   exon.seqs = BSgenome::getSeq(gen.seq, gtf.ranges)
+  
   names(exon.seqs) = paste0("chr", gtf.done$chrom, "_trid", 
                             gtf.ranges$transcript_id, "_exid", 
                             gtf.ranges$exon_id)
   
+  #Data collection for protein (start and stop codons)
+  temp.start = temp.gtf[temp.gtf$feature_type == "start-codon",]
+  #if (nrow(temp.start) >= 2){stop("too mayn start codons. Figure out.") }
+  temp.stop = temp.gtf[temp.gtf$feature_type == "stop-codon",]
+  #if (nrow(temp.stop) >= 2){stop("too mayn start codons. Figure out.") }
+  
+  if (nrow(temp.start) != 0){
+    #Excludes codons here depending on strand
+    if (temp.start$strand[1] == "-"){ prot.end = temp.start$start-1 }#end if
+    if (temp.start$strand[1] == "+"){ prot.start = temp.start$end+1 }#end if
+  } else { 
+    if (temp.gtf$strand[1] == "-") { prot.end = NA }
+    if (temp.gtf$strand[1] == "+") { prot.start = NA }
+  } #end else
+  
+  if (nrow(temp.stop) != 0){
+    #Excludes codons here depending on strand
+    if (temp.stop$strand[1] == "-"){  prot.start = temp.stop$end+1 }#end if
+    if (temp.stop$strand[1] == "+"){ prot.end = temp.stop$start-1  }#end if
+  } else { 
+    if (temp.gtf$strand[1] == "-") { prot.start = NA }
+    if (temp.gtf$strand[1] == "+") { prot.end = NA }
+  }#end else
+  
+  
+  if (length(prot.start) == 0){ prot.start = NA }
+  if (length(prot.end) == 0){ prot.end = NA }
+  if (length(prot.start) >= 2){ prot.start = NA }
+  if (length(prot.end) >= 2){ prot.end = NA }
+  
+  #Gets iD
+  prot.id = unique(temp.gtf$prot_id)
+  prot.id = prot.id[is.na(prot.id) != T]
+  
+  #Data collection for gene (need to go back to original gene data)
+  temp.gene = gtf.data[gtf.data$gene_id %in% temp.gtf$gene_id[1], ]
+  temp.gene = temp.gene[temp.gene$feature_type == "gene",]
+  temp.trans = temp.gtf[temp.gtf$feature_type == "transcript",]
+  
+  if (nrow(temp.gene) == 0){stop("no gene data?") }
+
   for (j in 1:length(exon.seqs)){
+    
     orf.data = find.orf(exon.seqs[j], codons = F, min.size = width(exon.seqs[j])*0.90)
     orf.data = orf.data[orf.data$Frame != "R1",]
     orf.data = orf.data[orf.data$Frame != "R2",]
@@ -267,20 +320,42 @@ for (i in 1:nrow(transcript.data)){
     #Obtains relevant metadata
     exon.ranges = gtf.done[gtf.done$exon_id == gsub(".*_exid", "", names(exon.seqs)[j])]
     
-    #Collect the data
-    set(collect.data, i =  index.val, j = match("target_name", header.data), value = names(exon.seqs)[j] )
+    #general data collection
     set(collect.data, i =  index.val, j = match("feature_type", header.data), value = exon.ranges$feature_type)
-    set(collect.data, i =  index.val, j = match("coding", header.data), value = "Yes")
-    set(collect.data, i =  index.val, j = match("gene_id", header.data), value = exon.ranges$gene_id)
-    set(collect.data, i =  index.val, j = match("transcript_id", header.data), value = exon.ranges$transcript_id)
-    set(collect.data, i =  index.val, j = match("protein_id", header.data), value = exon.ranges$prot_id)
-    set(collect.data, i =  index.val, j = match("exon_id", header.data), value = exon.ranges$exon_id)
-    set(collect.data, i =  index.val, j = match("exon_no", header.data), value = exon.ranges$exon_no)
-    set(collect.data, i =  index.val, j = match("chrom", header.data), value = exon.ranges$chrom)
-    set(collect.data, i =  index.val, j = match("start", header.data), value = exon.ranges$start)
-    set(collect.data, i =  index.val, j = match("end", header.data), value = exon.ranges$end)
-    set(collect.data, i =  index.val, j = match("length", header.data), value = exon.ranges$end-exon.ranges$start)
+    set(collect.data, i =  index.val, j = match("chrom", header.data), value = paste0("chr", exon.ranges$chrom) )
     set(collect.data, i =  index.val, j = match("strand", header.data), value = exon.ranges$strand)
+    
+    set(collect.data, i =  index.val, j = match("gene_id", header.data), value = temp.gene$gene_id)
+    set(collect.data, i =  index.val, j = match("gene_start", header.data), value =temp.gene$start )
+    set(collect.data, i =  index.val, j = match("gene_end", header.data), value = temp.gene$end )
+    set(collect.data, i =  index.val, j = match("gene_length", header.data), value = temp.gene$end-temp.gene$start )
+    
+    #Data collection for transcripts
+    set(collect.data, i =  index.val, j = match("transcript_id", header.data), value = temp.trans$transcript_id )
+    set(collect.data, i =  index.val, j = match("transcript_start", header.data), value = temp.trans$start )
+    set(collect.data, i =  index.val, j = match("transcript_end", header.data), value = temp.trans$end )
+    set(collect.data, i =  index.val, j = match("transcript_length", header.data), value = temp.trans$end-temp.trans$start )
+  
+    #Data collection for proteins
+    set(collect.data, i =  index.val, j = match("protein_id", header.data), value = prot.id)
+    set(collect.data, i =  index.val, j = match("protein_start", header.data), value = prot.start )
+    set(collect.data, i =  index.val, j = match("protein_end", header.data), value = prot.end )
+    set(collect.data, i =  index.val, j = match("protein_length", header.data), value = prot.end-prot.start )
+    
+    #Collects exon data
+    set(collect.data, i =  index.val, j = match("exon_id", header.data), value =exon.ranges$exon_id)
+    set(collect.data, i =  index.val, j = match("exon_no", header.data), value = as.numeric(exon.ranges$exon_no) )
+    set(collect.data, i =  index.val, j = match("exon_start", header.data), value = exon.ranges$start )
+    set(collect.data, i =  index.val, j = match("exon_end", header.data), value = exon.ranges$end )
+    set(collect.data, i =  index.val, j = match("exon_length", header.data), value = exon.ranges$end-exon.ranges$start)
+    
+    #Gives final names
+    names(exon.seqs)[j] = paste0("CDS", "_chr", gtf.done$chrom[1], 
+                                 "_id",  sprintf("%05d", index.val))
+    
+    set(collect.data, i =  index.val, j = match("target_name", header.data), value = names(exon.seqs)[j] )
+    
+    #Ups the index
     index.val = as.integer(index.val + 1)
   }#end j loop
   
@@ -293,7 +368,7 @@ for (i in 1:nrow(transcript.data)){
 setwd(out.dir)
 
 #Mus filtered exons
-save.seqs = final.seqs[width(final.seqs) >= 60]
+save.seqs = final.seqs[width(final.seqs) >= 50]
 save.seqs = save.seqs[names(save.seqs) %in% collect.data$target_name]
 final.loci = as.list(as.character(save.seqs))
 write.fasta(sequences = final.loci, names = names(final.loci), 
@@ -316,8 +391,6 @@ write.csv(write.data, file = "Mus_best_cds_metadata.csv")
 ##################################################################################################
 ##################################################################################################
 
-### Gotta deal with UTR and non-coding exons differently 
-
 header.data = c("target_name", "feature_type", "coding", "gene_id", "transcript_id", 
                 "protein_id", "exon_id", "exon_no", "chrom", "start", "end", "length", "strand")   
 collect.data = data.table(matrix(as.character(0), nrow = nrow(gtf.data), ncol = length(header.data)))
@@ -327,6 +400,8 @@ collect.data[, end:=as.integer(end)]
 
 final.seqs = DNAStringSet()
 index.val = as.integer(1)
+utr.count = 0
+ex.count = 0
 for (i in 1:nrow(transcript.data)){
   
   temp.gtf = gtf.data[gtf.data$transcript_id %in% transcript.data$Transcript_stable_ID[i], ]
@@ -343,7 +418,7 @@ for (i in 1:nrow(transcript.data)){
   
   non.code.exon = gtf.comb[is.na(gtf.comb$chrom) == T,]$exon_no
   non.code = temp.gtf[temp.gtf$exon_no %in% non.code.exon,]
-  gtf.utr = temp.gtf[grep("_utr", temp.gtf$feature_type)]
+  gtf.utr = temp.gtf[grep("-utr", temp.gtf$feature_type)]
   gtf.done = rbind(non.code, gtf.utr)
   
   if (nrow(gtf.done) == 0){ next }
@@ -375,7 +450,6 @@ for (i in 1:nrow(transcript.data)){
   # nc.seqs = append(exon.seqs, utr.seqs)
   # 
   save.seqs = DNAStringSet()
-  utr.count = 0
   for (j in 1:length(gtf.ranges)){
  
     #Gets the sequence
@@ -385,22 +459,21 @@ for (i in 1:nrow(transcript.data)){
     exon.range = gtf.done[j,]
  
     if (exon.range$feature_type == "exon"){
-      names(nc.seq) = paste0("Noncoding-exon_chr", exon.range$chrom, "_trid", 
-                                exon.range$transcript_id, "_exid", 
-                                exon.range$exon_id)
+      ex.count = ex.count + 1
+      names(nc.seq) = paste0("Noncoding-exon", "_chr", exon.range$chrom, 
+                             "_id",  sprintf("%05d", ex.count))
     }#end if
       
     if (exon.range$feature_type != "exon"){
       utr.count = utr.count + 1
-      names(nc.seq) = paste0("Noncoding-utr_chr", exon.range$chrom, "_trid", 
-                               exon.range$transcript_id, "_", 
-                               exon.range$feature_type, "-", utr.count)
+      names(nc.seq) = paste0("Noncoding-utr", "_chr", exon.range$chrom, 
+                             "_id",  sprintf("%05d", utr.count))
     }#end if 
     
     #Collect the data
     set(collect.data, i =  index.val, j = match("target_name", header.data), value = names(nc.seq) )
     set(collect.data, i =  index.val, j = match("feature_type", header.data), value = exon.range$feature_type)
-    set(collect.data, i =  index.val, j = match("coding", header.data), value = "Yes")
+    set(collect.data, i =  index.val, j = match("coding", header.data), value = "No")
     set(collect.data, i =  index.val, j = match("gene_id", header.data), value = exon.range$gene_id)
     set(collect.data, i =  index.val, j = match("transcript_id", header.data), value = exon.range$transcript_id)
     set(collect.data, i =  index.val, j = match("protein_id", header.data), value = exon.range$prot_id)
